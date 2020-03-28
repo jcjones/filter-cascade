@@ -3,6 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 import bitarray
+import concurrent.futures
 import datetime
 import hashlib
 import logging
@@ -94,12 +95,31 @@ class Bloomer:
             index = self.hash(hash_no=i, key=key)
             self.bitarray[index] = True
 
+    def __produce_all_futures(self, keyIter, executor):
+        for key in keyIter:
+            for i in range(self.nHashFuncs):
+                yield executor.submit(self.hash, hash_no=i, key=key)
+
+    def add_all(self, keyIter, executor):
+        all_futures = self.__produce_all_futures(keyIter, executor)
+        for future in concurrent.futures.as_completed(all_futures):
+            self.bitarray[future.result()] = True
+
     def __contains__(self, key):
         for i in range(self.nHashFuncs):
             index = self.hash(hash_no=i, key=key)
             if not self.bitarray[index]:
                 return False
         return True
+
+    def contains_all(self, keyIter, executor):
+        futures_to_key = {}
+        for key in keyIter:
+            for i in range(self.nHashFuncs):
+                futures_to_key[executor.submit(self.hash, hash_no=i, key=key)] = key
+        for future in concurrent.futures.as_completed(futures_to_key):
+            key = futures_to_key[future]
+            yield (key, self.bitarray[future.result()])
 
     def clear(self):
         self.bitarray.setall(False)
@@ -219,7 +239,7 @@ class FilterCascade:
         self.error_rates = [include_len / (math.sqrt(2) * exclude_len), 0.5]
         return self.error_rates
 
-    def initialize(self, *, include, exclude):
+    def initialize(self, *, include, exclude, executor=None):
         """
             Arg "exclude" is potentially larger than main memory, so it should
             be assumed to be passed as a lazy-loading iterator. If it isn't,
@@ -288,19 +308,29 @@ class FilterCascade:
                     depth, er, include_len, filter.size, filter.nHashFuncs
                 )
             )
+
             # loop over the elements that *should* be there. Add them to the filter.
-            for elem in include:
-                filter.add(elem)
+            if executor:
+                filter.add_all(include, executor)
+            else:
+                for elem in include:
+                    filter.add(elem)
 
             # loop over the elements that should *not* be there. Create a new layer
             # that *includes* the false positives and *excludes* the true positives
             log.debug("Processing false positives")
             false_positives = set()
             exclude_count = 0
-            for elem in exclude:
-                exclude_count += 1
-                if elem in filter:
-                    false_positives.add(elem)
+            if executor:
+                for elem, in_filter in filter.contains_all(exclude, executor):
+                    exclude_count += 1
+                    if in_filter:
+                        false_positives.add(elem)
+            else:
+                for elem in exclude:
+                    exclude_count += 1
+                    if elem in filter:
+                        false_positives.add(elem)
 
             if exclude_count < include_len:
                 raise InvertedLogicException(
@@ -372,11 +402,19 @@ class FilterCascade:
     def check(self, *, entries, exclusions):
         self.verify(include=entries, exclude=exclusions)
 
-    def verify(self, *, include, exclude):
-        for entry in include:
-            assert entry in self, "oops! false negative!"
-        for entry in exclude:
-            assert entry not in self, "oops! false positive!"
+    def verify(self, *, include, exclude, executor=None):
+        if not executor:
+            for entry in include:
+                assert entry in self, "oops! false negative!"
+            for entry in exclude:
+                assert entry not in self, "oops! false positive!"
+        else:
+            raise Exception("not implemented")
+            # for layer, filter in [
+            #         (idx + 1, self.filters[idx]) for idx in range(len(self.filters))
+            #     ]:
+            #     even = layer % 2 == 0
+            #     for key, in_filter in filter.contains_all(include, executor):
 
     def bitCount(self):
         total = 0

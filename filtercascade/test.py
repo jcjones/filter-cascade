@@ -1,3 +1,4 @@
+import concurrent.futures
 import filtercascade
 import hashlib
 import unittest
@@ -320,6 +321,23 @@ class TestFilterCascade(unittest.TestCase):
         self.assertEqual(h.data[3], 1)  # salt_len
         self.assertEqual(h.data[4], ord("a"))  # salt
         self.assertEqual(h.data[5], filtercascade.fileformats.HashAlgorithm.SHA256)
+
+    def test_fc_large_sets_with_executor(self):
+        fc = filtercascade.FilterCascade(
+            [], defaultHashAlg=filtercascade.fileformats.HashAlgorithm.SHA256, salt=b"a"
+        )
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            iterator, small_set = get_serial_iterator_and_set(
+                num_iterator=5_000_000, num_set=1_000
+            )
+            fc.initialize(include=small_set, exclude=iterator, executor=executor)
+
+            iterator, small_set = get_serial_iterator_and_set(
+                num_iterator=5_000_000, num_set=1_000
+            )
+            fc.verify(include=small_set, exclude=iterator)
+            # , executor=executor)
 
 
 class TestFilterCascadeSalts(unittest.TestCase):
