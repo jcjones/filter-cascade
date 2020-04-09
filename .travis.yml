@@ -9,7 +9,7 @@ install:
   - pip install pytest
 
 script:
-  - pytest filtercascade/test.py
+  - python -m pytest .
 
 matrix:
   fast_finish: true
